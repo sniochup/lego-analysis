@@ -1,0 +1,740 @@
+---
+title: "Lego Analysis"
+author: "Paweł Śnioszek"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: spacelab
+    number_sections: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, echo = F}
+knitr::opts_chunk$set(
+  echo = FALSE,
+	error = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+# Executive summary
+
+TODO - write executive summary
+
+# Libraries
+
+Libraries used to prepare the report.
+
+```{r libraries, echo = TRUE}
+library(knitr)
+library(dplyr)
+library(R.utils)
+library(data.table)
+library(tools)
+library(stringr)
+library(ggplot2)
+library(plotly)
+library(tidyr)
+library(scales)
+```
+
+# Data loading
+
+Code to load datasets from compressed files stored in a specified folder.
+
+```{r data_load, cache = TRUE, echo = T}
+folder_name = "data"
+csv_files <- list.files("data",
+                        pattern = "\\.csv.gz$",
+                        full.names = FALSE)
+files_names <- file_path_sans_ext(csv_files, compression = TRUE)
+
+for (file_name in files_names) {
+  assign(paste0(file_name, "_df"),
+         fread(file.path(
+           folder_name,
+           paste0(file_name, ".csv.gz")
+         )))
+}
+
+csv_files
+```
+
+```{r data_load_clear}
+rm(csv_files, file_name)
+```
+
+# Data intoduction
+
+The section below presents the datasets used for analysis, including their structure, dimensions, and basic statistics.
+
+```{r overall_statistics, results = 'asis'}
+rows_count <- 0
+cols_count <- 0
+values_count <- 0
+non_na_count <- 0
+
+for (file_name in files_names) {
+  df_name <- get(paste0(file_name, "_df"))
+  
+  rows_count <- rows_count + nrow(df_name)
+  cols_count <- cols_count + ncol(df_name)
+  values_count <- values_count + nrow(df_name) * ncol(df_name)
+  non_na_count <- non_na_count + sum(!is.na(df_name))
+}
+
+na_percentage <- (values_count - non_na_count) * 100 / values_count
+
+kable(
+  data.frame(
+    "Rows_count" = rows_count,
+    "Columns_count" = cols_count,
+    "Values_count" = values_count,
+    "NA_percentage" = paste0(round(na_percentage, 2), "%")
+  ),
+  caption = "Total dataset size",
+  align = "c"
+)
+
+rm(
+  rows_count,
+  cols_count,
+  values_count,
+  non_na_count,
+  na_percentage,
+  file_name,
+  df_name
+)
+```
+
+## Data structure
+
+```{r data_schema}
+include_graphics(file.path(folder_name,
+                                  "rebrickable_schema_v3.png"))
+```
+
+## Datasets summaries
+
+```{r summaries, results = 'asis'}
+options(knitr.kable.NA = '')
+
+for (file_name in files_names) {
+  displey_name <- gsub("_", " ", toTitleCase(file_name))
+  df_name <- get(paste0(file_name, "_df"))
+  summary_table <- unclass(summary(df_name))
+  
+  cat('\n###', displey_name, '\n')
+  
+  print(kable(
+    data.frame(Rows = dim(df_name)[1], Columns = dim(df_name)[2]),
+    caption = paste(displey_name, "dataset dimensions", sep = " "),
+    align = "l"
+  ))
+  
+  print(kable(
+    data.frame(summary_table, check.names = FALSE),
+    row.names = FALSE,
+    digits = 2,
+    align = "l",
+    caption = paste(displey_name, "dataset basic statistics", sep = " "),
+  ))
+  
+  print(kable(
+    head(df_name),
+    align = "l",
+    caption = paste("Head of", displey_name, "dataset", sep = " "),
+  ))
+  
+  cat('\n')
+}
+
+rm(file_name, df_name, displey_name, summary_table)
+```
+
+# Detailed analysis
+
+## Colors
+
+### Most popular colors of parts
+
+```{r popular_part_colors}
+inventory_parts_df %>%
+  left_join(colors_df, by = c("color_id" = "id")) %>%
+  select(name, rgb) %>%
+  mutate(rgb = paste0("#", rgb)) %>%
+  group_by(name, rgb) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(desc(count)) %>%
+  filter(count > 30000) %>%
+  ggplot(aes(
+    x = reorder(name, count),
+    y = count,
+    color = ifelse(rgb == "#FFFFFF", "black", rgb),
+    fill = rgb
+  )) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_identity() +
+  scale_color_identity() +
+  scale_y_continuous(
+    breaks = seq(0, 200000, by = 50000),
+    label = format(seq(0, 200000, by = 50000), big.mark = " ", trim = TRUE)
+  ) +
+  labs(title = "Most popular colors of parts [> 30,000]",
+       x = "Color",
+       y = "Number of parts") +
+  theme_minimal()
+```
+
+### Distribution of colors by transparency
+
+```{r colors_trans}
+colors_df %>%
+  group_by(is_trans) %>%
+  summarise(count = n()) %>%
+  mutate(is_trans = ifelse(is_trans == "t", "Transparent", "Opaque")) %>%
+  ggplot(aes(x = is_trans, y = count, fill = is_trans)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of colors by transparency",
+       x = "Transparency",
+       y = "Number of transparent colors") +
+  geom_text(
+    aes(label = count),
+    vjust = -0.2,
+    color = "black",
+    size = 4
+  ) +
+  theme_minimal()
+```
+
+## Elements
+
+### Most popular elements colors
+
+```{r popular_elements_colors}
+elements_df %>%
+  left_join(colors_df, by = c("color_id" = "id")) %>%
+  select(name, rgb) %>%
+  mutate(rgb = paste0("#", rgb)) %>%
+  group_by(name, rgb) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(desc(count)) %>%
+  filter(count > 2000) %>%
+  ggplot(aes(
+    x = reorder(name, count),
+    y = count,
+    color = ifelse(rgb == "#FFFFFF", "black", rgb),
+    fill = rgb
+  )) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_identity() +
+  scale_color_identity() +
+  labs(title = "Most popular elements colors [> 2000]",
+       x = "Color",
+       y = "Number of elements") +
+  theme_minimal()
+```
+
+## Minifigs
+
+### Most popular number of parts used to build minifigs
+
+```{r popular_minifigs_number_of_parts}
+minifigs_df %>%
+  group_by(num_parts) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  head(6) %>%
+  ggplot(aes(
+    x = reorder(num_parts, count),
+    y = count,
+    fill = num_parts
+  )) +
+  geom_bar(stat = "identity") +
+  labs(title = "Most popular number of parts used to build minifigs",
+       x = "Number of parts",
+       y = "Number of minifigs") +
+  scale_fill_gradient(name = "Number of Parts") +
+  theme_minimal()
+```
+
+### Most popular minifigs
+
+```{r popular_minifigs}
+inventories_df %>%
+  inner_join(inventory_minifigs_df, by = c("id" = "inventory_id")) %>%
+  inner_join(minifigs_df, by = c("fig_num" = "fig_num")) %>%
+  group_by(name, num_parts) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(name = str_trunc(name, 30)) %>%
+  arrange(desc(count)) %>%
+  head(10) %>%
+  ggplot(aes(
+    x = reorder(name, count),
+    y = count,
+    fill = num_parts
+  )) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_gradient(name = "Number of Parts") +
+  labs(title = "Most popular minifigs",
+       x = "Minifig name",
+       y = "Number of minifigs") +
+  theme_minimal()
+```
+
+```{r popular_minifigs_table}
+inventories_df %>%
+  inner_join(inventory_minifigs_df, by = c("id" = "inventory_id")) %>%
+  inner_join(minifigs_df, by = c("fig_num" = "fig_num")) %>%
+  select(name, img_url) %>%
+  group_by(name, img_url) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(desc(count)) %>%
+  head(10) %>%
+  mutate(img_url = paste0("![](", img_url, "){width=25%}")) %>%
+  kable(caption = "Most popular minifigs",
+        col.names = c("Name", "Image", "Number of minifigs"),
+        align = "c")
+```
+
+## Themes
+
+### Most popular themes
+
+```{r most_popular_themes}
+sets_df %>%
+  left_join(themes_df, by = c("theme_id" = "id")) %>%
+  left_join(themes_df, by = c("parent_id" = "id")) %>%
+  rename(
+    parent_theme_name = name,
+    grandparent_id = parent_id.y,
+    theme_name = name.y
+  ) %>%
+  select(parent_theme_name, grandparent_id, theme_name) %>%
+  left_join(themes_df, by = c("grandparent_id" = "id")) %>%
+  rename(grandarent_theme_name = name) %>%
+  select(grandarent_theme_name, parent_theme_name, theme_name) %>%
+  mutate(name = ifelse(
+    !is.na(grandarent_theme_name),
+    grandarent_theme_name,
+    ifelse(!is.na(parent_theme_name), parent_theme_name, theme_name)
+  )) %>%
+  group_by(name) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  filter(count > 500) %>%
+  ggplot(aes(
+    x = reorder(name, count),
+    y = count,
+    fill = log(count)
+  )) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(breaks = seq(0, 3500, by = 500)) +
+  guides(fill = FALSE) +
+  labs(title = "Most popular themes",
+       x = "Theme name",
+       y = "Number of sets") +
+  coord_flip() +
+  theme_minimal()
+```
+
+## Parts
+
+### Most popular parts
+
+```{r most_popular_parts}
+inventories_df %>%
+  inner_join(inventory_parts_df, by = c("id" = "inventory_id")) %>%
+  inner_join(parts_df, by = c("part_num" = "part_num")) %>%
+  select(name, part_num) %>%
+  group_by(name, part_num) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(desc(count)) %>%
+  head(10) %>%
+  mutate(name = str_trunc(name, 30)) %>%
+  ggplot(aes(
+    x = reorder(name, count),
+    y = count,
+    fill = log(count)
+  )) +
+  scale_y_continuous(
+    breaks = seq(0, 125000, by = 25000),
+    label = format(seq(0, 125000, by = 25000), big.mark = " ", trim = TRUE)
+  ) +
+  guides(fill = FALSE) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Most popular parts",
+       x = "Part name",
+       y = "Number of parts") +
+  theme_minimal()
+```
+
+```{r most_popular_parts_table}
+inventories_df %>%
+  inner_join(inventory_parts_df, by = c("id" = "inventory_id")) %>%
+  inner_join(parts_df, by = c("part_num" = "part_num")) %>%
+  group_by(name, part_num) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(desc(count)) %>%
+  head(10) %>%
+  inner_join(distinct(inventory_parts_df, part_num, .keep_all = TRUE)) %>%
+  select(name, img_url, count) %>%
+  mutate(img_url = paste0("![](", img_url, "){width=25%}")) %>%
+  kable(
+    caption = "Most popular minifigs",
+    col.names = c("Name", "Image", "Number of parts"),
+    align = "c"
+  )
+```
+
+### Most populat parts material
+
+```{r most_popular_parts_material}
+ggplotly(
+inventories_df %>%
+  inner_join(inventory_parts_df, by = c("id" = "inventory_id")) %>%
+  inner_join(parts_df, by = c("part_num" = "part_num")) %>%
+  group_by(part_material) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  mutate(percent = round(count / sum(count) * 100, 2)) %>%
+  head(10) %>%
+  ggplot(aes(
+    x = reorder(part_material, percent),
+    y = percent,
+    fill = percent
+  )) +
+  guides(fill = FALSE) +
+  labs(title = "Most popular parts material",
+       x = "Part material",
+       y = "Percentage of parts (%)") +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  scale_y_continuous(labels = percent_format(scale = 1)))
+```
+
+### Most popular parts categories
+
+```{r most_popular_parts_categories}
+ggplotly(
+  inventories_df %>%
+    inner_join(inventory_parts_df, by = c("id" = "inventory_id")) %>%
+    inner_join(parts_df, by = c("part_num" = "part_num")) %>%
+    group_by(part_cat_id) %>%
+    summarise(count = n()) %>%
+    arrange(desc(count)) %>%
+    head(10) %>%
+    inner_join(part_categories_df, by = c("part_cat_id" = "id")) %>%
+    mutate(name = str_trunc(name, 30)) %>%
+    ggplot(aes(
+      x = reorder(name, count),
+      y = count,
+      fill = log(count)
+    )) +
+    guides(fill = FALSE) +
+    labs(title = "Most popular parts categories",
+         x = "Part category name",
+         y = "Number of parts") +
+    coord_flip() +
+    geom_bar(stat = "identity") +
+    theme_minimal()
+)
+```
+
+## Sets
+
+### Sets with the most parts
+
+```{r sets_with_the_most_parts}
+sets_df %>%
+  arrange(desc(num_parts)) %>%
+  head(10) %>%
+  ggplot(aes(
+    x = reorder(name, num_parts),
+    y = num_parts,
+    fill = log(num_parts)
+  )) +
+  guides(fill = FALSE) +
+  labs(title = "Sets with the most parts",
+       x = "Set name",
+       y = "Number of parts") +
+  coord_flip() +
+  geom_bar(stat = "identity") +
+  theme_minimal()
+```
+
+```{r sets_with_the_most_parts_table}
+sets_df %>%
+  arrange(desc(num_parts)) %>%
+  head(10) %>%
+  select(name, img_url, num_parts) %>%
+  mutate(img_url = paste0("![](", img_url, "){width=25%}")) %>%
+  kable(
+    caption = "Sets with the most parts",
+    col.names = c("Name", "Image", "Number of parts"),
+    align = "c"
+  )
+```
+
+# Corelation
+
+## Total number of colors used in the sets and the year
+
+```{r correlation_num_colors_year_df}
+cor_num_colors_year_df <- inventories_df %>%
+  inner_join(inventory_parts_df, by = c("id" = "inventory_id")) %>%
+  inner_join(sets_df, by = c("set_num" = "set_num")) %>%
+  select(year, color_id) %>%
+  distinct() %>%
+  filter(year < 2023) %>%
+  group_by(year) %>%
+  summarise(count = n())
+```
+
+```{r correlation_num_colors_year_table}
+cor_num_colors_year_df %>%
+  rename("Year" = year, "Number of colors" = count) %>%
+  cor %>%
+  round(3) %>%
+  kable(caption = "Correlation between the total number of colors and the year",
+        align = "c")
+```
+
+```{r correlation_num_colors_year}
+ggplotly(
+  cor_num_colors_year_df %>%
+    ggplot(aes(x = year, y = count)) +
+    geom_point() +
+    scale_x_continuous(breaks = seq(1950, 2023, by = 10)) +
+    labs(title = "Correlation between the total number of colors and the year",
+         x = "Year",
+         y = "Number of colors") +
+    geom_smooth() +
+    theme_minimal()
+)
+```
+
+```{r correlation_num_colors_year_clear}
+rm(cor_num_colors_year_df)
+```
+
+## Total number of parts per year and year
+
+```{r correlation_sum_of_part_over_years_df}
+cor_sum_of_part_over_years_df <- sets_df %>%
+  select (year, num_parts) %>%
+  group_by(year) %>%
+  summarise(count = sum(num_parts)) %>%
+  filter(year < 2023)
+```
+
+```{r correlation_sum_of_part_over_years_table}
+cor_sum_of_part_over_years_df %>%
+  rename("Year" = year, "Total number of parts" = count) %>%
+  cor %>%
+  round(3) %>%
+  kable(caption = "Correlation between total number of parts per year and year of production",
+        align = "c")
+```
+
+```{r correlation_sum_of_part_over_years}
+ggplotly(
+  cor_sum_of_part_over_years_df %>%
+    ggplot(aes(x = year, y = count)) +
+    geom_point() +
+    scale_x_continuous(breaks = seq(1950, 2023, by = 10)) +
+    scale_y_continuous(
+      breaks = seq(0, 280000, by = 50000),
+      label = format(seq(0, 280000, by = 50000), big.mark = " ", trim = TRUE)
+    ) +
+    labs(title = "Correlation between total number of parts per year and year of production",
+         x = "Year",
+         y = "Total number of parts") +
+    geom_smooth() +
+    theme_minimal()
+)
+```
+
+```{r correlation_sum_of_part_over_years_clear}
+rm(cor_sum_of_part_over_years_df)
+```
+
+## Total number of sets and year
+
+```{r correlation_number_of_sets_df}
+cor_number_of_sets_df <- sets_df %>%
+  group_by(year) %>%
+  summarise(count = n()) %>%
+  filter(year < 2023)
+```
+
+```{r correlation_number_of_sets_table}
+cor_number_of_sets_df %>%
+  rename("Year" = year, "Total number of sets" = count) %>%
+  cor %>%
+  round(3) %>%
+  kable(caption = "Correlation between total number of sets and year of production",
+        align = "c")
+```
+
+```{r correlation_number_of_sets}
+ggplotly(
+  cor_number_of_sets_df %>%
+    ggplot(aes(x = year, y = count)) +
+    geom_point() +
+    scale_x_continuous(breaks = seq(1950, 2023, by = 10)) +
+    labs(title = "Total number of sets over years",
+         x = "Year",
+         y = "Correlation between total number of sets and year of production") +
+    geom_smooth() +
+    theme_minimal()
+)
+```
+
+```{r correlation_number_of_sets_clear}
+rm(cor_number_of_sets_df)
+```
+
+# Trends
+
+## Number of sets over time for most popular theme
+
+```{r most_popular_themes_over_time, fig.height = 8}
+ggplotly (
+  sets_df %>%
+    left_join(themes_df, by = c("theme_id" = "id")) %>%
+    left_join(themes_df, by = c("parent_id" = "id")) %>%
+    rename(
+      parent_theme_name = name,
+      grandparent_id = parent_id.y,
+      theme_name = name.y
+    ) %>%
+    select(year, parent_theme_name, grandparent_id, theme_name) %>%
+    left_join(themes_df, by = c("grandparent_id" = "id")) %>%
+    rename(grandarent_theme_name = name) %>%
+    select(year, grandarent_theme_name, parent_theme_name, theme_name) %>%
+    mutate(name = ifelse(
+      !is.na(grandarent_theme_name),
+      grandarent_theme_name,
+      ifelse(!is.na(parent_theme_name), parent_theme_name, theme_name)
+    )) %>%
+    select(year, name) %>%
+    group_by(name, year) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    filter(
+      name %in% c("Gear",
+                  "Duplo",
+                  "Educational and Dacta",
+                  "Books",
+                  "Star Wars")
+    ) %>%
+    filter(year < 2023 & year > 1985) %>%
+    ggplot(aes(
+      x = year,
+      y = count,
+      color = name
+    )) +
+    guides(color = FALSE) +
+    geom_point() +
+    geom_line() +
+    labs(title = "Number of sets over time for each main theme",
+         x = "Year",
+         y = "Number of sets") +
+    facet_grid(name ~ ., scales = "free_y") +
+    theme_bw()
+)
+```
+
+## Mean number of parts over years for themes
+
+```{r number_of_parts_over_time_for_each_theme}
+temp_df <- sets_df %>%
+    left_join(themes_df, by = c("theme_id" = "id")) %>%
+    left_join(themes_df, by = c("parent_id" = "id")) %>%
+    rename(
+      parent_theme_name = name,
+      grandparent_id = parent_id.y,
+      theme_name = name.y
+    ) %>%
+    select(year, parent_theme_name, grandparent_id, theme_name, num_parts) %>%
+    left_join(themes_df, by = c("grandparent_id" = "id")) %>%
+    rename(grandarent_theme_name = name) %>%
+    select(
+      year,
+      grandarent_theme_name,
+      parent_theme_name,
+      theme_name,
+      num_parts
+    ) %>%
+    mutate(name = ifelse(
+      !is.na(grandarent_theme_name),
+      grandarent_theme_name,
+      ifelse(!is.na(parent_theme_name), parent_theme_name, theme_name)
+    )) %>%
+    select(year, name, num_parts) %>%
+    group_by(name, year) %>%
+    summarise(mean = mean(num_parts), .groups = "drop") %>%
+    filter(year < 2023)
+
+names_to_remove <- temp_df %>%
+  group_by(name) %>%
+  summarise(num_unique_years = n_distinct(year),
+            .groups = "drop") %>%
+  filter(num_unique_years < 15)
+
+ggplotly (  
+  temp_df %>%
+    filter(!name %in% names_to_remove$name) %>%
+    ggplot(aes(
+      x = year,
+      y = mean,
+      color = name
+    )) +
+    geom_point() +
+    labs(title = "Mean number of parts over years for theme",
+         x = "Year",
+         y = "Number of parts") +
+    theme_minimal()
+)
+
+rm(temp_df, names_to_remove)
+```
+
+## Trends in sets
+
+```{r sets_trends, fig.height = 8}
+ggplotly (
+  sets_df %>%
+    group_by(year) %>%
+    summarise(
+      "Max parts" = max(num_parts),
+      "Mean parts" = mean(num_parts),
+      "Big sets over 1000 parts" = sum(num_parts > 1000),
+      "Themes number" = n_distinct(theme_id)
+    ) %>%
+    filter(year < 2023) %>%
+    gather(key = "key", value = "value",-year) %>%
+    ggplot(aes(
+      x = year, y = value, color = key
+    )) +
+    geom_line() +
+    guides(color = FALSE) +
+    labs(title = "Trends in sets over years",
+         x = "Year",
+         y = "Totals") +
+    facet_grid(key ~ ., scales = "free_y") +
+    theme_bw()
+)
+```
+
+# Predictions / Forcasting
+
+TODO
